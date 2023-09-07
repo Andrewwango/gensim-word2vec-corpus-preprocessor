@@ -13,6 +13,8 @@ from gensim.utils import simple_preprocess
 ### CONSTANTS ###
 #################
 
+#TODO: STOPWORDS = gensim.....STOPWORDS and same with PAT
+
 # STOPWORDS: set of stopwords removed from document when tokenising (mostly taken from gensim.parsing.preprocessing.STOPWORDS 
 # with minor modifications)
 STOPWORDS = """
@@ -49,21 +51,8 @@ STOPWORDS = set(w for w in STOPWORDS.split() if w)
 PAT_ALPHABETIC = re.compile('(((?![\d])\w)+)', re.UNICODE)
 
 
-def token_commonsense_filter(token: str):
-    """Check whether to filter additional stopwords in inference mode
-    such as words that common sense deem it shouldn't be included.
 
-    Args:
-        token (str): input token
-
-    Returns:
-        bool: whether token passes common sense check
-    """
-    commonsense_stopwords = "biasinput abcdefg".split()
-    return token not in commonsense_stopwords
-
-
-def token_filter(token: str, tag: str, stopwords=STOPWORDS, min_len=2, max_len=15, commonsense_filter=False) -> bool:
+def token_filter(token: str, tag: str, stopwords=STOPWORDS, min_len=2, max_len=15) -> bool:
     """Check if token is: not None, not a number, not a stopword, and reasonable length.
 
     Args:
@@ -72,17 +61,12 @@ def token_filter(token: str, tag: str, stopwords=STOPWORDS, min_len=2, max_len=1
         stopwords (set, optional): set of stopwords to remove. Defaults to constant STOPWORDS.
         min_len (int, optional): min acceptable length of tokens. Defaults to 2.
         max_len (int, optional): max acceptable length of tokens. Defaults to 15.
-        commonsense_filter (bool, optional): whether to filter additional stopwords in inference mode
-            such as words that common sense deem it shouldn't be included. Defaults to False.
 
     Returns:
         bool: whether token passes filter checks mentioned above
     """
-
-    filters = token is not None and tag not in ("CD",) and token not in stopwords and min_len <= len(token) <= max_len
-    if commonsense_filter:
-        filters = filters and token_commonsense_filter(token)
-    return filters 
+    #TODO: optional custom pass in tag filter
+    return token is not None and tag not in ("CD",) and token not in stopwords and min_len <= len(token) <= max_len
 
 def token_regex(token: str, regex=PAT_ALPHABETIC) -> str:
     """Apply regex to token
@@ -133,13 +117,19 @@ def document_length(document: str) -> int:
     Returns:
         int: word count of input document
     """
-    tokens = simple_preprocess(document)
-    tokens = [token for token in tokens if token_commonsense_filter(token)]
-    return len(tokens)
+    return len(simple_preprocess(document))
 
-def document_to_tokens(document: str, use_textblob=True, return_textblob=False, commonsense_filter=False) -> list:
-    """Tokenise and preprocess raw document string. Preprocess includes lemmatization (only if use_textblob==True, 
-        stopword removal, lower case, length filter, regex match to remove punctuation and remove numbers.)
+def document_to_tokens(document: str, use_textblob=True, return_textblob=False) -> list:
+    """Tokenise and preprocess raw document string. Preprocess includes lemmatization (only if use_textblob==True), 
+        stopword removal, lower case, length filter, regex match to remove punctuation and remove numbers.
+
+    Example:
+    >>> from gensim_corpus_preprocessor import document_to_tokens
+    >>> doc = "Patient number 2 was isolated with his wife that had been diagnosed with SARS-CoV-2 infection"
+    >>> document_to_tokens(doc)
+    ['']
+    >>> document_to_tokens(doc, use_textblob=False)
+    ['']
 
     Args:
         document (str): input document string on one line.
@@ -148,8 +138,6 @@ def document_to_tokens(document: str, use_textblob=True, return_textblob=False, 
             other functionality is common to both methods. Defaults to True.
         return_textblob (bool, optional): whether to return the blob created during tokenization when use_textblob==True.
             Defaults to False.
-        commonsense_filter (bool, optional): whether to filter additional stopwords in inference mode
-            such as words that common sense deem it shouldn't be included. Defaults to False.
 
     Returns:
         if return_textblob==True and use_textblob==True:
@@ -162,7 +150,7 @@ def document_to_tokens(document: str, use_textblob=True, return_textblob=False, 
     if use_textblob:
         blob = TextBlob(document)
         tokens_tags = [(token_preprocess(token, tag), tag) for token, tag in blob.tags]
-        tokens_filtered = [token for token, tag in tokens_tags if token_filter(token, tag, commonsense_filter=commonsense_filter)]
+        tokens_filtered = [token for token, tag in tokens_tags if token_filter(token, tag)]
     else:
         tokens = simple_preprocess(document)
         tokens_filtered = remove_stopword_tokens(tokens, stopwords=STOPWORDS)
@@ -171,22 +159,29 @@ def document_to_tokens(document: str, use_textblob=True, return_textblob=False, 
 
 class TrainingCorpus:
     """Class representing input training corpus for training word2vec models. Wraps an iterable to read corpus (1 line = 1 document), and tokenize each line.
-        Includes functionality to perform tokenization offline before training to save time.
+        Includes functionality to perform tokenization offline before training to save time. This is necessary when tokenization is expensive,
+        for example using context-aware lemmatization.
+
+        Example:
+        >>> from gensim_corpus_preprocessor import TrainingCorpus
+        >>> corp = TrainingCorpus("", tokenize_before_training=True)
+        >>> gensim.word2vec
+        
     """
-    def __init__(self, corpus: str, tokenize_before_training=False, use_textblob=True, base_fn="data/corpus"):
+    def __init__(self, corpus: str, tokenize_before_training=False, use_textblob=True, base_fn=""):
         """Initialise training corpus.
 
         Args:
-            corpus (str): name of corpus (must be present in data/corpus folder)
+            corpus (str): filename of corpus (must be present in folder given by "base_fn")
             tokenize_before_training (bool, optional): perform tokenization offline before training. Make sure to set this as True if tokenization is expensive.
             If True, tokens are saved in npy format after tokenization so tokenization doesn't need to be performed again. Defaults to False.
             use_textblob (bool, optional): whether tokenization should use textblob (includes lemmatization but is expensive). Defaults to True.
-            base_fn (str, optional): data/corpus folder. Defaults to "data/corpus".
+            base_fn (str, optional): folder to load corpus and save tokens. Defaults to "".
         
         Raises:
-            FileNotFoundError: corpus file not found in data/corpus folder.
+            FileNotFoundError: corpus file not found in folder given by "base_fn".
         """
-        self.fn = f'{base_fn}/{corpus}.txt'
+        self.fn = f'{base_fn}/{corpus}{".txt" if "." not in corpus else ""}'
         self.tokenize_before_training = tokenize_before_training
         self.use_textblob = use_textblob
         
